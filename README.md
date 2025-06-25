@@ -1,4 +1,4 @@
-# DstXmlConverterApp (.dst ↔ .xml)
+# SheetSet File DST convert to XML (.dst ↔ .xml)
 
 Ứng dụng WinForms (C# .NET 8) giúp **convert lại các file .DST của AutoCAD SheetSet** thành định dạng XML dễ đọc và chỉnh sửa.
 
