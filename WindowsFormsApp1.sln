@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36121.58
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SheetSet_File_DST_Converter", "SheetSet_File_DST_Converter\SheetSet_File_DST_Converter.csproj", "{DB6AFEF9-2D2E-4255-A53B-5F6F9BC53D4A}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{DB6AFEF9-2D2E-4255-A53B-5F6F9BC53D4A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{DB6AFEF9-2D2E-4255-A53B-5F6F9BC53D4A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DB6AFEF9-2D2E-4255-A53B-5F6F9BC53D4A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DB6AFEF9-2D2E-4255-A53B-5F6F9BC53D4A}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {BFA276F7-E171-40E2-A138-808F75B50344}
+	EndGlobalSection
+EndGlobal
