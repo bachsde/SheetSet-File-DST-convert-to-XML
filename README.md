@@ -61,11 +61,11 @@ Bạn có thể tạo file này từ một cặp `.dst` & `.xml` đã biết b�
 
 ## 🤝 Cảm ơn
 
-Phân tích ban đầu từ: [@mxwell's gist](https://gist.github.com/mxwell/e253548692820cdce778631165090080)
+Phân tích từ: [@mxwell's gist](https://gist.github.com/mxwell/e253548692820cdce778631165090080)
 
 ---
 
-## 📷 Screenshot (tuỳ chọn)
+## 📷 Screenshot 
 
 ![screenshot](https://github.com/user-attachments/assets/1eb44604-892a-4112-9d91-4fcfbaa3eaaa)
 ![image](https://github.com/user-attachments/assets/c2acf27e-79f9-48dc-a258-826afcb4dd72)
