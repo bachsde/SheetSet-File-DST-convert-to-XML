@@ -1,4 +1,4 @@
-﻿namespace SheetSet_File_DST_Converter
+namespace SheetSet_File_DST_Converter
 {
     partial class Form1
     {
@@ -40,6 +40,7 @@
             btnExportExcel = new System.Windows.Forms.Button();
             treeView1 = new System.Windows.Forms.TreeView();
             btnXmlToTreeView = new System.Windows.Forms.Button();
+            btnSheetSetViewer = new System.Windows.Forms.Button();
             SuspendLayout();
             // 
             // btnGenerateDictionary
@@ -73,7 +74,7 @@
             btnBrowseDict.TabIndex = 13;
             btnBrowseDict.Text = "Browse Dictionary";
             btnBrowseDict.UseVisualStyleBackColor = true;
-            btnBrowseDict.Click += btnBrowseDict_Click_1;
+            btnBrowseDict.Click += btnBrowseDict_Click;
             // 
             // btnBrowseXml
             // 
@@ -84,7 +85,7 @@
             btnBrowseXml.TabIndex = 12;
             btnBrowseXml.Text = "Browse .XML";
             btnBrowseXml.UseVisualStyleBackColor = true;
-            btnBrowseXml.Click += btnBrowseXml_Click_1;
+            btnBrowseXml.Click += btnBrowseXml_Click;
             // 
             // btnBrowseDst
             // 
@@ -95,7 +96,7 @@
             btnBrowseDst.TabIndex = 11;
             btnBrowseDst.Text = "Browse .DST";
             btnBrowseDst.UseVisualStyleBackColor = true;
-            btnBrowseDst.Click += btnBrowseDst_Click_1;
+            btnBrowseDst.Click += btnBrowseDst_Click;
             // 
             // txtDict
             // 
@@ -139,7 +140,7 @@
             btnExportExcel.Name = "btnExportExcel";
             btnExportExcel.Size = new System.Drawing.Size(192, 27);
             btnExportExcel.TabIndex = 15;
-            btnExportExcel.Text = "Export XML To Excel";
+            btnExportExcel.Text = "Export To Excel";
             btnExportExcel.UseVisualStyleBackColor = true;
             btnExportExcel.Click += btnExportExcel_Click;
             // 
@@ -159,15 +160,27 @@
             btnXmlToTreeView.Name = "btnXmlToTreeView";
             btnXmlToTreeView.Size = new System.Drawing.Size(192, 27);
             btnXmlToTreeView.TabIndex = 17;
-            btnXmlToTreeView.Text = "Read XML To TreeView";
+            btnXmlToTreeView.Text = "Đọc vào TreeView";
             btnXmlToTreeView.UseVisualStyleBackColor = true;
             btnXmlToTreeView.Click += btnXmlToTreeView_Click;
+            // 
+            // btnSheetSetViewer
+            // 
+            btnSheetSetViewer.Location = new System.Drawing.Point(14, 85);
+            btnSheetSetViewer.Margin = new System.Windows.Forms.Padding(4, 3, 4, 3);
+            btnSheetSetViewer.Name = "btnSheetSetViewer";
+            btnSheetSetViewer.Size = new System.Drawing.Size(304, 27);
+            btnSheetSetViewer.TabIndex = 18;
+            btnSheetSetViewer.Text = "Sheet Set Viewer (giống SSM)...";
+            btnSheetSetViewer.UseVisualStyleBackColor = true;
+            btnSheetSetViewer.Click += btnSheetSetViewer_Click;
             // 
             // Form1
             // 
             AutoScaleDimensions = new System.Drawing.SizeF(7F, 15F);
             AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
             ClientSize = new System.Drawing.Size(680, 370);
+            Controls.Add(btnSheetSetViewer);
             Controls.Add(btnXmlToTreeView);
             Controls.Add(treeView1);
             Controls.Add(btnExportExcel);
@@ -203,6 +216,7 @@
         private System.Windows.Forms.Button btnExportExcel;
         private System.Windows.Forms.TreeView treeView1;
         private System.Windows.Forms.Button btnXmlToTreeView;
+        private System.Windows.Forms.Button btnSheetSetViewer;
     }
 }
 
