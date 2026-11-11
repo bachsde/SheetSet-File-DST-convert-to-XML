@@ -12,28 +12,31 @@ using SheetSet_File_DST_Converter.Helper;
 namespace SheetSet_File_DST_Converter
 {
     /// <summary>
-    /// Cửa sổ xem / sửa Sheet Set giống Sheet Set Manager:
+    /// Cửa sổ chính: đọc / sửa file Sheet Set (.dst hoặc .xml) giống Sheet Set Manager.
+    /// - Menu: Tệp (mở / build DST / Excel), Chỉnh sửa, Xem, Công cụ (chuyển đổi, dictionary), Trợ giúp.
     /// - Trái: cây Sheet Set / Subset / Sheet, chọn nhiều bằng Ctrl / Shift + Click.
     /// - Phải: bảng thuộc tính theo nhóm. Chọn nhiều sheet → sửa giá trị chung cho tất cả.
     /// - Giá trị nhập là "chờ ghi" (chữ đậm) cho tới khi bấm Apply; "Build DST" để lưu file.
-    /// - Copy / Paste subset (chỉ cấu trúc subset hoặc kèm sheet), copy được giữa các sheet set.
-    /// - Xoá subset / sheet, xoá chỉ sheet trong subset; Hoàn tác (Ctrl+Z) cho Xoá / Paste / Apply.
+    /// - Copy / Paste subset, Xoá subset / sheet, Hoàn tác (Ctrl+Z) cho Xoá / Paste / Apply.
+    /// - Kéo thả file .dst / .xml vào cửa sổ để mở.
     /// Form tạo hoàn toàn bằng code (không cần file Designer/resx).
     /// </summary>
-    public sealed class SheetSetViewerForm : Form, IPropertyEditSession
+    public sealed class MainForm : Form, IPropertyEditSession
     {
         private const int IconSheetSet = 0;
         private const int IconSubset = 1;
         private const int IconSheet = 2;
         private const int IconSheetMissing = 3;
 
-        private readonly SheetSetDocument document;
-        private SsmComponent Root { get { return document.Root; } } // dựng lại sau khi paste
-        private readonly DstXmlConverter converter;
-        private readonly string sourcePath;
-        private readonly string sourceDstPath; // null nếu mở từ file XML
-        private string sourceDstHash;          // nội dung file .dst lúc mở → phát hiện SSM sửa file trong lúc viewer đang mở
-        private readonly string baseTitle;
+        private const string AppTitle = "SheetSet File .DST Converter - Dev by Ba'ch Nguyen";
+
+        private SheetSetDocument document;     // null khi chưa mở file
+        private SsmComponent Root { get { return document?.Root; } } // dựng lại sau khi paste
+        private DstXmlConverter converter;
+        private string dictionaryPath;         // null = dùng bảng built-in
+        private string sourcePath;             // file đang mở (.dst hoặc .xml)
+        private string sourceDstPath;          // null nếu mở từ file XML
+        private string sourceDstHash;          // nội dung file .dst lúc mở → phát hiện SSM sửa file trong lúc đang mở
         private bool dirty; // đã Apply / paste nhưng chưa Build DST
         private string statusNote; // thông báo ngắn trên thanh trạng thái (vd: đã copy subset)
 
@@ -62,6 +65,7 @@ namespace SheetSet_File_DST_Converter
         private readonly Label lblPending;
         private readonly ToolStripTextBox txtFilter;
         private readonly ToolStripStatusLabel lblStatus;
+        private readonly ToolStripStatusLabel lblDictionary;
         private readonly ImageList icons;
         private readonly ContextMenuStrip menu;
         private readonly ToolStripMenuItem miOpenDwg;
@@ -74,29 +78,25 @@ namespace SheetSet_File_DST_Converter
         private readonly ToolStripMenuItem miDeleteSheetsInside;
         private readonly ToolStripMenuItem miCopyName;
         private readonly ToolStripMenuItem miCopyPath;
+        private readonly ToolStripMenuItem miExportSelected;
+        private readonly ToolStripMenuItem miOpenExcelSelected;
+        private string lastExcelPath; // file Excel tạm / gần nhất đã mở hoặc import
+        private const string ExcelFilter = "Excel Files (*.xlsx)|*.xlsx|All files (*.*)|*.*";
         private readonly System.Windows.Forms.Timer filterTimer;
         private Font rootFont;
 
-        /// <param name="sourceDstPath">File .dst gốc (gợi ý khi Build DST); null nếu mở từ XML.</param>
-        /// <param name="sourceDstHash">DstFileGuard.ComputeHash của file .dst lúc đọc; null nếu mở từ XML.</param>
-        public SheetSetViewerForm(SheetSetDocument document, DstXmlConverter converter,
-                                  string sourcePath, string sourceDstPath, string sourceDstHash)
+        public MainForm()
         {
-            if (document == null) throw new ArgumentNullException(nameof(document));
-            if (converter == null) throw new ArgumentNullException(nameof(converter));
+            converter = DstXmlConverter.Create(null); // bảng built-in
 
-            this.document = document;
-            this.converter = converter;
-            this.sourcePath = sourcePath;
-            this.sourceDstPath = sourceDstPath;
-            this.sourceDstHash = sourceDstHash;
-
-            baseTitle = "Sheet Set Viewer - " + Root.DisplayText + "   [" + Path.GetFileName(sourcePath) + "]";
-            Text = baseTitle;
-            Size = new Size(1100, 720);
-            MinimumSize = new Size(700, 450);
-            StartPosition = FormStartPosition.CenterParent;
+            Text = AppTitle;
+            Size = new Size(1150, 740);
+            MinimumSize = new Size(760, 480);
+            StartPosition = FormStartPosition.CenterScreen;
             KeyPreview = true;
+            AllowDrop = true;
+            DragEnter += MainForm_DragEnter;
+            DragDrop += MainForm_DragDrop;
 
             icons = CreateIcons();
 
@@ -170,6 +170,8 @@ namespace SheetSet_File_DST_Converter
                 (s, e) => DeleteSheetsInside());
             miCopyName = new ToolStripMenuItem("Copy tên vào clipboard", null, (s, e) => CopySelectedNames());
             miCopyPath = new ToolStripMenuItem("Copy đường dẫn DWG", null, (s, e) => CopyText(PrimaryComponent?.DwgPath));
+            miExportSelected = new ToolStripMenuItem("Xuất Excel các mục đang chọn...", null, (s, e) => ExportExcel(true));
+            miOpenExcelSelected = new ToolStripMenuItem("Mở các mục đang chọn trong Excel", null, (s, e) => OpenInExcel(true));
             miOpenDwg.Font = new Font(miOpenDwg.Font, FontStyle.Bold); // hành động mặc định khi double-click
 
             menu = new ContextMenuStrip();
@@ -178,7 +180,8 @@ namespace SheetSet_File_DST_Converter
                 miOpenDwg, miOpenFolder, miSelectSheets, new ToolStripSeparator(),
                 miCopySubset, miCopySubsetWithSheets, miPasteSubset, new ToolStripSeparator(),
                 miDelete, miDeleteSheetsInside, new ToolStripSeparator(),
-                miCopyName, miCopyPath
+                miCopyName, miCopyPath, new ToolStripSeparator(),
+                miExportSelected, miOpenExcelSelected
             });
             menu.Opening += Menu_Opening;
             tree.ContextMenuStrip = menu;
@@ -200,6 +203,10 @@ namespace SheetSet_File_DST_Converter
                 ToolTipText = "Hoàn tác (Ctrl+Z)"
             };
 
+            toolStrip.Items.Add(new ToolStripButton("Mở .DST...", null, (s, e) => OpenWithDialog(true))
+            {
+                ToolTipText = "Mở file sheet set .dst (Ctrl+O) — hoặc kéo thả file vào cửa sổ"
+            });
             toolStrip.Items.Add(btnBuild);
             toolStrip.Items.Add(btnUndo);
             toolStrip.Items.Add(new ToolStripButton("Xoá", null, (s, e) => DeleteSelected())
@@ -220,13 +227,21 @@ namespace SheetSet_File_DST_Converter
 
             // ===== Status bar
             lblStatus = new ToolStripStatusLabel { Spring = true, TextAlign = ContentAlignment.MiddleLeft };
+            lblDictionary = new ToolStripStatusLabel { BorderSides = ToolStripStatusLabelBorderSides.Left };
             var statusStrip = new StatusStrip();
             statusStrip.Items.Add(lblStatus);
+            statusStrip.Items.Add(lblDictionary);
+
+            // ===== Menu chính
+            var menuStrip = BuildMenu();
+            MainMenuStrip = menuStrip;
 
             // Thứ tự Add quan trọng: control Fill phải add trước để các thanh Top/Bottom dock trước
             Controls.Add(split);
             Controls.Add(toolStrip);
+            Controls.Add(menuStrip);   // add sau toolStrip → nằm trên cùng
             Controls.Add(statusStrip);
+            UpdateDictionaryLabel();
 
             filterTimer = new System.Windows.Forms.Timer { Interval = 300 };
             filterTimer.Tick += (s, e) => { filterTimer.Stop(); BuildTree(txtFilter.Text.Trim()); };
@@ -234,6 +249,7 @@ namespace SheetSet_File_DST_Converter
             Load += (s, e) =>
             {
                 split.SplitterDistance = Math.Min(400, Math.Max(150, ClientSize.Width / 3));
+                foreach (Control c in Controls) EnableDropRecursive(c);
                 if (DstFileGuard.IsAutoCadRunning())
                     statusNote = "AutoCAD đang chạy — đóng sheet set trong SSM trước khi Build DST";
                 BuildTree("");
@@ -254,30 +270,23 @@ namespace SheetSet_File_DST_Converter
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
-            if (e.CloseReason == CloseReason.UserClosing)
-            {
-                if (!ResolvePending("đóng cửa sổ"))
-                {
-                    e.Cancel = true;
-                    base.OnFormClosing(e);
-                    return;
-                }
-
-                if (dirty)
-                {
-                    var answer = MessageBox.Show(this,
-                        "Có thay đổi chưa được build thành DST.\n\nBuild DST trước khi đóng?",
-                        "Sheet Set Viewer", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
-
-                    if (answer == DialogResult.Cancel || (answer == DialogResult.Yes && !BuildDst()))
-                        e.Cancel = true;
-                }
-            }
+            if (e.CloseReason == CloseReason.UserClosing && !ConfirmDiscardChanges("đóng chương trình"))
+                e.Cancel = true;
             base.OnFormClosing(e);
         }
 
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
+            if (keyData == (Keys.Control | Keys.O))
+            {
+                OpenWithDialog(true);
+                return true;
+            }
+            if (keyData == Keys.F5)
+            {
+                ReloadFile();
+                return true;
+            }
             if (keyData == (Keys.Control | Keys.S))
             {
                 BuildDst();
@@ -319,8 +328,37 @@ namespace SheetSet_File_DST_Converter
 
         #region Tree – dựng cây
 
+        private void ShowEmptyTree()
+        {
+            tree.BeginUpdate();
+            try
+            {
+                selection.Clear();
+                anchorNode = null;
+                SetNativeSelected(null);
+                tree.Nodes.Clear();
+                tree.Nodes.Add(new TreeNode("(Chưa mở file — Tệp → Mở file .DST, hoặc kéo thả file .dst vào đây)")
+                {
+                    ForeColor = SystemColors.GrayText
+                });
+            }
+            finally
+            {
+                tree.EndUpdate();
+            }
+
+            UpdateGrid();
+            UpdateStatus();
+        }
+
         private void BuildTree(string filter)
         {
+            if (Root == null)
+            {
+                ShowEmptyTree();
+                return;
+            }
+
             var previous = SelectedComponents.ToList();
             var previousPrimary = PrimaryComponent;
 
@@ -503,13 +541,13 @@ namespace SheetSet_File_DST_Converter
 
         private void Tree_AfterSelect(object sender, TreeViewEventArgs e)
         {
-            if (suppressAfterSelect || e.Node == null) return;
+            if (suppressAfterSelect || e.Node == null || Root == null) return;
             SelectSingle(e.Node); // click thường hoặc phím mũi tên
         }
 
         private void Tree_NodeMouseClick(object sender, TreeNodeMouseClickEventArgs e)
         {
-            if (e.Node == null) return;
+            if (e.Node == null || Root == null) return;
 
             // Bỏ qua click vào dấu +/- mở rộng
             var hit = tree.HitTest(e.Location);
@@ -787,7 +825,7 @@ namespace SheetSet_File_DST_Converter
 
             pending.Clear();
             dirty = true;
-            Text = baseTitle + "  *";
+            UpdateTitle();
 
             grid.Refresh();
             UpdatePendingUi();
@@ -845,7 +883,7 @@ namespace SheetSet_File_DST_Converter
             var answer = MessageBox.Show(this,
                 $"Có {pending.Count} giá trị chưa Apply.\n\nApply trước khi {action}?\n" +
                 "(No = bỏ các giá trị chưa Apply)",
-                "Sheet Set Viewer", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+                Caption, MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
 
             if (answer == DialogResult.Cancel) return false;
             if (answer == DialogResult.Yes) return ApplyPending();
@@ -923,7 +961,7 @@ namespace SheetSet_File_DST_Converter
                 var newNode = document.PasteSubset(clip.Node, target, name);
 
                 dirty = true;
-                Text = baseTitle + "  *";
+                UpdateTitle();
                 statusNote = $"Đã paste \"{name}\" ({clip.Summary})";
 
                 // Dựng lại cây (bỏ lọc để chắc chắn thấy subset mới) rồi chọn subset mới
@@ -1130,7 +1168,7 @@ namespace SheetSet_File_DST_Converter
         private void AfterStructureChanged(string note, System.Xml.XmlNode selectXml)
         {
             dirty = true;
-            Text = baseTitle + "  *";
+            UpdateTitle();
             statusNote = note;
 
             filterTimer.Stop();
@@ -1167,6 +1205,11 @@ namespace SheetSet_File_DST_Converter
         /// <summary>Mã hoá XML hiện tại thành DST và lưu file. Trả true nếu đã lưu.</summary>
         private bool BuildDst()
         {
+            if (document == null)
+            {
+                ShowInfo("Chưa mở file nào. Hãy mở một file .dst (hoặc .xml) trước.");
+                return false;
+            }
             if (!ResolvePending("build DST")) return false;
 
             try
@@ -1204,12 +1247,16 @@ namespace SheetSet_File_DST_Converter
                 }
                 File.WriteAllBytes(dstPath, dst);
 
-                // File gốc giờ là bản mình vừa ghi → lần Build sau không cảnh báo nhầm
-                if (DstFileGuard.SamePath(dstPath, sourceDstPath))
+                // File .dst đích giờ là bản mình vừa ghi → lần Build sau mặc định ghi vào đó và không cảnh báo nhầm.
+                // (Nếu đang mở từ XML thì file .dst vừa build trở thành đích mặc định.)
+                if (sourceDstPath == null || DstFileGuard.SamePath(dstPath, sourceDstPath))
+                {
+                    sourceDstPath = dstPath;
                     sourceDstHash = DstFileGuard.ComputeHash(dst);
+                }
 
                 dirty = false;
-                Text = baseTitle;
+                UpdateTitle();
                 UpdateStatus();
 
                 var msg = new StringBuilder();
@@ -1264,9 +1311,9 @@ namespace SheetSet_File_DST_Converter
             {
                 var answer = MessageBox.Show(this,
                     "File .dst đã bị chương trình khác thay đổi (thường là Sheet Set Manager lưu lại) " +
-                    "kể từ lúc mở viewer.\n\n" +
+                    "kể từ lúc mở file.\n\n" +
                     "Build sẽ GHI ĐÈ các thay đổi đó (file hiện tại vẫn được backup .bak).\n\n" +
-                    "Muốn giữ thay đổi của SSM: chọn No, đóng viewer, mở lại file rồi làm lại thao tác.\n\n" +
+                    "Muốn giữ thay đổi của SSM: chọn No, rồi mở lại file (Tệp → Mở lại, F5) và làm lại thao tác.\n\n" +
                     "Vẫn ghi đè?",
                     "File đã bị thay đổi", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
                     MessageBoxDefaultButton.Button2);
@@ -1281,6 +1328,13 @@ namespace SheetSet_File_DST_Converter
 
         private void UpdateStatus()
         {
+            if (Root == null)
+            {
+                lblStatus.Text = "Chưa mở file — Tệp → Mở file .DST (Ctrl+O) hoặc kéo thả file vào cửa sổ" +
+                                 (string.IsNullOrEmpty(statusNote) ? "" : "  •  " + statusNote);
+                return;
+            }
+
             string text = $"{Root.CountSubsets()} subset  •  {Root.CountSheets()} sheet";
 
             int missing = Root.CountMissingDwg();
@@ -1333,6 +1387,12 @@ namespace SheetSet_File_DST_Converter
             miCopyPath.Enabled = isSheet && !string.IsNullOrEmpty(comp.DwgPath);
             miCopyName.Text = selection.Count > 1 ? $"Copy tên vào clipboard ({selection.Count} mục)" : "Copy tên vào clipboard";
 
+            int selectedSheets = GetSelectedSheetNodes().Count;
+            miExportSelected.Text = $"Xuất Excel các mục đang chọn ({selectedSheets} sheet)...";
+            miExportSelected.Enabled = selectedSheets > 0;
+            miOpenExcelSelected.Text = $"Mở các mục đang chọn trong Excel ({selectedSheets} sheet)";
+            miOpenExcelSelected.Enabled = selectedSheets > 0;
+
             bool isSubset = comp.Kind == SsmNodeKind.Subset;
             miCopySubset.Visible = isSubset;
             miCopySubsetWithSheets.Visible = isSubset;
@@ -1359,7 +1419,7 @@ namespace SheetSet_File_DST_Converter
             if (!comp.DwgExists)
             {
                 MessageBox.Show(this, "Không tìm thấy file DWG:\n" + comp.DwgPath,
-                    "Sheet Set Viewer", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    Caption, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
@@ -1371,7 +1431,7 @@ namespace SheetSet_File_DST_Converter
             catch (Exception ex)
             {
                 MessageBox.Show(this, "Không mở được DWG:\n" + ex.Message,
-                    "Sheet Set Viewer", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    Caption, MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -1387,14 +1447,14 @@ namespace SheetSet_File_DST_Converter
             catch (Exception ex)
             {
                 MessageBox.Show(this, "Không mở được thư mục:\n" + ex.Message,
-                    "Sheet Set Viewer", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    Caption, MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
         /// <summary>Copy tên các mục đang chọn, theo thứ tự trên cây, mỗi dòng một mục.</summary>
         private void CopySelectedNames()
         {
-            var ordered = VisibleNodes().Where(selection.Contains).Select(n => n.Text);
+            var ordered = SelectedInTreeOrder().Select(c => c.DisplayText);
             CopyText(string.Join(Environment.NewLine, ordered));
         }
 
@@ -1402,6 +1462,990 @@ namespace SheetSet_File_DST_Converter
         {
             if (!string.IsNullOrEmpty(text))
                 Clipboard.SetText(text);
+        }
+
+        #endregion
+
+        #region Mở file
+
+        private const string XmlFilter = "XML files (*.xml)|*.xml|All files (*.*)|*.*";
+        private const string DstFilter = "DST files (*.dst)|*.dst|All files (*.*)|*.*";
+        private const string JsonFilter = "JSON files (*.json)|*.json|All files (*.*)|*.*";
+        private const string Caption = "SheetSet DST Converter";
+
+        private void OpenWithDialog(bool dst)
+        {
+            string path = dst
+                ? AskOpenPath(DstFilter, "Mở file Sheet Set (.dst)", sourcePath)
+                : AskOpenPath(XmlFilter, "Mở file XML Sheet Set", sourcePath);
+
+            if (path != null) OpenFile(path);
+        }
+
+        private void ReloadFile()
+        {
+            if (sourcePath == null) return;
+            OpenFile(sourcePath);
+        }
+
+        /// <summary>
+        /// Mở file .dst (giải mã trong bộ nhớ, không cần tạo XML) hoặc file .xml.
+        /// Lỗi → giữ nguyên file đang mở. Trả true nếu đã mở.
+        /// </summary>
+        private bool OpenFile(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            {
+                MessageBox.Show(this, "Không tìm thấy file:\n" + path, Caption,
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
+            }
+
+            string ext = Path.GetExtension(path);
+            bool isDst = string.Equals(ext, ".dst", StringComparison.OrdinalIgnoreCase);
+            bool isXml = string.Equals(ext, ".xml", StringComparison.OrdinalIgnoreCase);
+            if (!isDst && !isXml)
+            {
+                MessageBox.Show(this, "Chỉ mở được file .dst hoặc .xml.", Caption,
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
+            }
+
+            if (!ConfirmDiscardChanges("mở file khác")) return false;
+
+            Cursor = Cursors.WaitCursor;
+            try
+            {
+                byte[] xmlBytes;
+                string dstPath = null;
+                string dstHash = null;
+
+                if (isDst)
+                {
+                    byte[] dstBytes = File.ReadAllBytes(path);
+                    xmlBytes = converter.DstToXml(dstBytes);
+                    dstPath = path;
+                    dstHash = DstFileGuard.ComputeHash(dstBytes);
+                }
+                else
+                {
+                    xmlBytes = File.ReadAllBytes(path);
+                }
+
+                // Đường dẫn tương đối của DWG tính từ thư mục chứa file nguồn
+                var doc = SheetSetDocument.Load(xmlBytes, Path.GetDirectoryName(path));
+
+                // Đọc thành công mới đổi trạng thái
+                document = doc;
+                sourcePath = path;
+                sourceDstPath = dstPath;
+                sourceDstHash = dstHash;
+
+                pending.Clear();
+                undoStack.Clear();
+                dirty = false;
+                statusNote = null;
+
+                txtFilter.Text = "";
+                filterTimer.Stop();
+
+                UpdateUndoUi();
+                UpdatePendingUi();
+                BuildTree("");
+                UpdateTitle();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "Lỗi mở file", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
+            finally
+            {
+                Cursor = Cursors.Default;
+            }
+        }
+
+        /// <summary>
+        /// Trước khi mở file khác / đóng chương trình: xử lý giá trị chưa Apply và thay đổi chưa Build DST.
+        /// Trả false nếu người dùng chọn Cancel.
+        /// </summary>
+        private bool ConfirmDiscardChanges(string action)
+        {
+            if (document == null) return true;
+            if (!ResolvePending(action)) return false;
+            if (!dirty) return true;
+
+            var answer = MessageBox.Show(this,
+                "Có thay đổi chưa được build thành DST.\n\n" +
+                "Build DST trước khi " + action + "?\n(No = bỏ các thay đổi)",
+                Caption, MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+
+            if (answer == DialogResult.Cancel) return false;
+            if (answer == DialogResult.Yes) return BuildDst();
+            return true;
+        }
+
+        private void UpdateTitle()
+        {
+            if (document == null)
+            {
+                Text = AppTitle;
+                return;
+            }
+
+            string mark = dirty ? "  *" : "";
+            Text = Root.DisplayText + "   [" + Path.GetFileName(sourcePath) + "]" + mark + " - " + Caption;
+        }
+
+        private void UpdateDictionaryLabel()
+        {
+            string name = dictionaryPath == null ? "built-in" : Path.GetFileName(dictionaryPath);
+            lblDictionary.Text = "Dictionary: " + name + " (" + converter.KnownByteCount + "/256 byte)";
+            lblDictionary.ToolTipText = dictionaryPath ?? "Bảng mã dựng sẵn trong chương trình";
+        }
+
+        /// <summary>Control con nằm đè lên form nên cũng phải nhận kéo thả (kể cả control bên trong PropertyGrid).</summary>
+        private void EnableDropRecursive(Control control)
+        {
+            control.AllowDrop = true;
+            control.DragEnter += MainForm_DragEnter;
+            control.DragDrop += MainForm_DragDrop;
+            foreach (Control child in control.Controls) EnableDropRecursive(child);
+        }
+
+        private void MainForm_DragEnter(object sender, DragEventArgs e)
+        {
+            if (e.Data.GetDataPresent(DataFormats.FileDrop))
+                e.Effect = DragDropEffects.Copy;
+        }
+
+        private void MainForm_DragDrop(object sender, DragEventArgs e)
+        {
+            var files = e.Data.GetData(DataFormats.FileDrop) as string[];
+            if (files == null || files.Length == 0) return;
+
+            // Mở sau khi kết thúc thao tác kéo thả, để hộp thoại không chặn Explorer
+            string path = files[0];
+            BeginInvoke(new Action(() => OpenFile(path)));
+        }
+
+        #endregion
+
+        #region Menu chính
+
+        private static ToolStripMenuItem Item(string text, string shortcut, Action action)
+        {
+            var item = new ToolStripMenuItem(text);
+            if (!string.IsNullOrEmpty(shortcut)) item.ShortcutKeyDisplayString = shortcut;
+            if (action != null) item.Click += (s, e) => action();
+            return item;
+        }
+
+        private MenuStrip BuildMenu()
+        {
+            // ===== Tệp
+            var miOpenDst = Item("Mở file .DST...", "Ctrl+O", () => OpenWithDialog(true));
+            var miOpenXml = Item("Mở file .XML...", null, () => OpenWithDialog(false));
+            var miReload = Item("Mở lại file", "F5", ReloadFile);
+            var miBuild = Item("Build DST (lưu thành .DST)...", "Ctrl+S", () => BuildDst());
+            var miXlOpenAll = Item("Mở trong Excel — toàn bộ sheet", null, () => OpenInExcel(false));
+            var miXlOpenSel = Item("Mở trong Excel — các mục đang chọn", null, () => OpenInExcel(true));
+            var miXlImportLast = Item("Import lại từ file Excel gần nhất", null, ImportFromLastExcel);
+            var miXlImportFile = Item("Import từ file Excel...", null, ImportFromExcelDialog);
+            var miExcelAll = Item("Lưu thành file .xlsx — toàn bộ sheet...", null, () => ExportExcel(false));
+            var miExcelSel = Item("Lưu thành file .xlsx — các mục đang chọn...", null, () => ExportExcel(true));
+            var mExcel = new ToolStripMenuItem("Excel");
+            mExcel.DropDownItems.AddRange(new ToolStripItem[]
+            {
+                miXlOpenAll, miXlOpenSel, new ToolStripSeparator(),
+                miXlImportLast, miXlImportFile, new ToolStripSeparator(),
+                miExcelAll, miExcelSel
+            });
+            var miExit = Item("Thoát", "Alt+F4", () => Close());
+
+            var mFile = new ToolStripMenuItem("&Tệp");
+            mFile.DropDownItems.AddRange(new ToolStripItem[]
+            {
+                miOpenDst, miOpenXml, miReload, new ToolStripSeparator(),
+                miBuild, new ToolStripSeparator(), mExcel, new ToolStripSeparator(), miExit
+            });
+            mFile.DropDownOpening += (s, e) =>
+            {
+                bool has = document != null;
+                miReload.Enabled = sourcePath != null;
+                miBuild.Enabled = has;
+                miExcelAll.Enabled = has;
+                miXlOpenAll.Enabled = has;
+                miXlImportFile.Enabled = has;
+
+                int selectedSheets = has ? GetSelectedSheetNodes().Count : 0;
+                miExcelSel.Text = $"Lưu thành file .xlsx — các mục đang chọn ({selectedSheets} sheet)...";
+                miExcelSel.Enabled = selectedSheets > 0;
+                miXlOpenSel.Text = $"Mở trong Excel — các mục đang chọn ({selectedSheets} sheet)";
+                miXlOpenSel.Enabled = selectedSheets > 0;
+
+                bool hasLast = has && lastExcelPath != null && File.Exists(lastExcelPath);
+                miXlImportLast.Text = hasLast
+                    ? "Import lại từ file Excel gần nhất (" + Path.GetFileName(lastExcelPath) + ")"
+                    : "Import lại từ file Excel gần nhất";
+                miXlImportLast.Enabled = hasLast;
+            };
+
+            // ===== Chỉnh sửa
+            var miUndo = Item("Hoàn tác", "Ctrl+Z", Undo);
+            var miCopySub = Item("Copy subset (chỉ subset)", null, () => CopySubset(false));
+            var miCopySubSheets = Item("Copy subset kèm sheet", "Ctrl+C", () => CopySubset(true));
+            var miPaste = Item("Paste subset vào mục đang chọn", "Ctrl+V", PasteSubset);
+            var miDel = Item("Xoá các mục đang chọn", "Del", DeleteSelected);
+            var miDelSheets = Item("Xoá tất cả sheet bên trong (giữ subset)", null, DeleteSheetsInside);
+            var miSelAll = Item("Chọn tất cả sheet", "Ctrl+A", SelectAllVisibleSheets);
+            var miFind = Item("Tìm / lọc...", "Ctrl+F", () => { txtFilter.Focus(); txtFilter.SelectAll(); });
+            var miSaveSel = Item("Lưu danh sách đang chọn ra file...", null, SaveSelectionList);
+            var miLoadSel = Item("Nạp danh sách chọn từ file...", null, LoadSelectionList);
+
+            var mEdit = new ToolStripMenuItem("&Chỉnh sửa");
+            mEdit.DropDownItems.AddRange(new ToolStripItem[]
+            {
+                miUndo, new ToolStripSeparator(),
+                miCopySub, miCopySubSheets, miPaste, new ToolStripSeparator(),
+                miDel, miDelSheets, new ToolStripSeparator(),
+                miSelAll, miFind, new ToolStripSeparator(),
+                miSaveSel, miLoadSel
+            });
+            mEdit.DropDownOpening += (s, e) =>
+            {
+                bool has = document != null;
+                var comp = PrimaryComponent;
+                bool isSubset = comp != null && comp.Kind == SsmNodeKind.Subset;
+                bool isContainer = comp != null && comp.Kind != SsmNodeKind.Sheet;
+
+                miUndo.Enabled = undoStack.Count > 0;
+                miUndo.Text = undoStack.Count > 0
+                    ? "Hoàn tác: " + undoStack[undoStack.Count - 1].Label
+                    : "Hoàn tác";
+
+                miCopySub.Enabled = isSubset;
+                miCopySubSheets.Enabled = isSubset;
+                miPaste.Enabled = isContainer && SubsetClipboard.Current != null;
+                miDel.Enabled = SelectedComponents.Any(c => c.Kind != SsmNodeKind.SheetSet);
+                miDelSheets.Enabled = isContainer && comp.CountSheets() > 0;
+                miSelAll.Enabled = has;
+                miFind.Enabled = has;
+                miSaveSel.Enabled = has && SelectedComponents.Any();
+                miLoadSel.Enabled = has;
+            };
+
+            // ===== Xem
+            var miExpand = Item("Mở rộng tất cả", null, ExpandAll);
+            var miCollapse = Item("Thu gọn", null, CollapseToSubsets);
+            var miXmlTree = Item("Xem cấu trúc XML (TreeView)...", null, ShowXmlTree);
+
+            var mView = new ToolStripMenuItem("&Xem");
+            mView.DropDownItems.AddRange(new ToolStripItem[]
+            {
+                miExpand, miCollapse, new ToolStripSeparator(), miXmlTree
+            });
+            mView.DropDownOpening += (s, e) =>
+            {
+                bool has = document != null;
+                miExpand.Enabled = has;
+                miCollapse.Enabled = has;
+                miXmlTree.Enabled = has;
+            };
+
+            // ===== Công cụ
+            var miDstToXml = Item("Chuyển DST → XML...", null, ToolsDstToXml);
+            var miXmlToDst = Item("Chuyển XML → DST...", null, ToolsXmlToDst);
+            var miGenDict = Item("Tạo dictionary từ cặp file DST + XML mẫu...", null, ToolsGenerateDictionary);
+            var miChooseDict = Item("Chọn file dictionary (.json)...", null, ToolsChooseDictionary);
+            var miBuiltIn = Item("Dùng dictionary built-in", null, ToolsUseBuiltInDictionary);
+
+            var mTools = new ToolStripMenuItem("Cô&ng cụ");
+            mTools.DropDownItems.AddRange(new ToolStripItem[]
+            {
+                miDstToXml, miXmlToDst, new ToolStripSeparator(),
+                miGenDict, miChooseDict, miBuiltIn
+            });
+            mTools.DropDownOpening += (s, e) =>
+            {
+                miBuiltIn.Checked = dictionaryPath == null;
+                miChooseDict.Checked = dictionaryPath != null;
+                miChooseDict.ToolTipText = dictionaryPath;
+            };
+
+            // ===== Trợ giúp
+            var mHelp = new ToolStripMenuItem("T&rợ giúp");
+            mHelp.DropDownItems.Add(Item("Hướng dẫn && phím tắt...", null, ShowHelp));
+
+            var menuStrip = new MenuStrip();
+            menuStrip.Items.AddRange(new ToolStripItem[] { mFile, mEdit, mView, mTools, mHelp });
+            return menuStrip;
+        }
+
+        private void ShowHelp()
+        {
+            MessageBox.Show(this,
+                "Mở file: Tệp → Mở file .DST (Ctrl+O), hoặc kéo thả file .dst / .xml vào cửa sổ.\n\n" +
+                "Chọn nhiều: Ctrl+Click, Shift+Click, Ctrl+A (tất cả sheet).\n" +
+                "Sửa giá trị: nhập trong bảng thuộc tính bên phải, rồi bấm Apply.\n" +
+                "Copy / Paste subset: chuột phải vào subset, hoặc Ctrl+C / Ctrl+V khi đang ở cây.\n" +
+                "Xoá: phím Del. Hoàn tác: Ctrl+Z.\n" +
+                "Excel: Tệp → Excel → Mở trong Excel (không cần lưu trước), sửa, nhấn Ctrl+S trong Excel,\n" +
+                "rồi Import lại (hoặc chọn file khác). Ghép theo cột Sheet ID; chỉ cập nhật sheet có sẵn.\n" +
+                "Lưu: Tệp → Build DST (Ctrl+S) — luôn tạo backup .bak.\n\n" +
+                "Lưu ý: hãy đóng sheet set trong Sheet Set Manager của AutoCAD trước khi Build DST.",
+                "Hướng dẫn", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
+        private void ShowXmlTree()
+        {
+            if (document == null)
+            {
+                ShowInfo("Hãy mở một file sheet set trước.");
+                return;
+            }
+            if (!ResolvePending("xem cấu trúc XML")) return;
+
+            Cursor = Cursors.WaitCursor;
+            try
+            {
+                new XmlTreeForm(document.Xml, Path.GetFileName(sourcePath)).Show(this);
+            }
+            catch (Exception ex)
+            {
+                ShowError("Lỗi xem cấu trúc XML", ex.Message);
+            }
+            finally
+            {
+                Cursor = Cursors.Default;
+            }
+        }
+
+        #endregion
+
+        #region Danh sách chọn
+
+        private const string SelectionFilter = "Selection list (*.json)|*.json|All files (*.*)|*.*";
+
+        /// <summary>Các mục đang chọn, theo thứ tự trên cây (kể cả mục trong nhánh đang thu gọn).</summary>
+        private List<SsmComponent> SelectedInTreeOrder()
+        {
+            var result = new List<SsmComponent>();
+            if (tree.Nodes.Count == 0) return result;
+
+            var rootNode = tree.Nodes[0];
+            foreach (var node in new[] { rootNode }.Concat(Descendants(rootNode)))
+            {
+                var comp = node.Tag as SsmComponent;
+                if (comp != null && selection.Contains(node)) result.Add(comp);
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// Các sheet (phần tử XML) của những mục đang chọn: sheet được chọn,
+        /// cộng toàn bộ sheet nằm trong subset / sheet set được chọn. Theo thứ tự trong sheet set, không trùng.
+        /// </summary>
+        private List<System.Xml.XmlNode> GetSelectedSheetNodes()
+        {
+            var result = new List<System.Xml.XmlNode>();
+            if (document == null) return result;
+
+            var wanted = new HashSet<System.Xml.XmlNode>();
+            foreach (var comp in SelectedComponents)
+            {
+                if (comp.Node == null) continue;
+
+                if (comp.Kind == SsmNodeKind.Sheet)
+                {
+                    wanted.Add(comp.Node);
+                }
+                else
+                {
+                    foreach (System.Xml.XmlNode n in comp.Node.SelectNodes(".//AcSmSheet"))
+                        wanted.Add(n);
+                }
+            }
+
+            foreach (System.Xml.XmlNode n in document.Xml.SelectNodes("//AcSmSheet"))
+            {
+                if (wanted.Contains(n)) result.Add(n);
+            }
+            return result;
+        }
+
+        private void SaveSelectionList()
+        {
+            if (document == null)
+            {
+                ShowInfo("Hãy mở một file sheet set trước.");
+                return;
+            }
+
+            var items = SelectedInTreeOrder();
+            if (items.Count == 0)
+            {
+                ShowInfo("Chưa chọn mục nào.");
+                return;
+            }
+
+            try
+            {
+                string path = AskSavePath("Lưu danh sách đang chọn", SelectionFilter,
+                    Path.GetFileNameWithoutExtension(sourcePath) + "_selection.json",
+                    Path.GetDirectoryName(sourcePath));
+                if (path == null) return;
+
+                SelectionList.Save(path, Root.DisplayText, Path.GetFileName(sourcePath), items);
+
+                int sheets = items.Count(c => c.Kind == SsmNodeKind.Sheet);
+                int containers = items.Count - sheets;
+                ShowInfo($"Đã lưu danh sách chọn:\n{path}\n\n" +
+                         $"{sheets} sheet, {containers} subset / sheet set.\n" +
+                         "Nạp lại bằng: Chỉnh sửa → Nạp danh sách chọn từ file.");
+            }
+            catch (Exception ex)
+            {
+                ShowError("Lỗi lưu danh sách chọn", ex.Message);
+            }
+        }
+
+        private void LoadSelectionList()
+        {
+            if (document == null)
+            {
+                ShowInfo("Hãy mở một file sheet set trước.");
+                return;
+            }
+
+            string path = AskOpenPath(SelectionFilter, "Nạp danh sách chọn", sourcePath);
+            if (path == null) return;
+
+            try
+            {
+                var entries = SelectionList.Load(path);
+                if (entries.Count == 0)
+                {
+                    ShowInfo("File danh sách chọn không có mục nào.");
+                    return;
+                }
+
+                List<SelectionEntry> notFound;
+                var comps = SelectionList.Resolve(Root, entries, out notFound);
+                if (comps.Count == 0)
+                {
+                    ShowInfo($"Không tìm thấy mục nào trong {entries.Count} mục của danh sách " +
+                             "trong sheet set đang mở.\n\nCó thể danh sách được lưu từ một sheet set khác.");
+                    return;
+                }
+
+                // Bỏ bộ lọc để thấy đủ các mục sẽ chọn
+                if (txtFilter.Text.Length > 0)
+                {
+                    txtFilter.Text = "";
+                    filterTimer.Stop();
+                    BuildTree("");
+                }
+
+                var nodes = new List<TreeNode>();
+                foreach (var comp in comps)
+                {
+                    var node = FindNode(tree.Nodes[0], comp);
+                    if (node != null) nodes.Add(node);
+                }
+                if (nodes.Count == 0) return;
+
+                // Mở các nhánh chứa mục được chọn
+                tree.BeginUpdate();
+                try
+                {
+                    foreach (var n in nodes)
+                        for (var p = n.Parent; p != null; p = p.Parent) p.Expand();
+                }
+                finally
+                {
+                    tree.EndUpdate();
+                }
+
+                SelectNodes(nodes);
+                nodes[0].EnsureVisible();
+
+                if (notFound.Count == 0)
+                {
+                    statusNote = $"Đã nạp danh sách: chọn {nodes.Count} mục";
+                    UpdateStatus();
+                }
+                else
+                {
+                    var msg = new StringBuilder();
+                    msg.AppendLine($"Đã chọn {nodes.Count} mục.");
+                    msg.AppendLine();
+                    msg.AppendLine($"Không tìm thấy {notFound.Count} mục (đã bị xoá / đổi số hiệu, hoặc trùng số hiệu):");
+                    foreach (var entry in notFound.Take(10))
+                        msg.AppendLine("  • " + entry.Display);
+                    if (notFound.Count > 10) msg.AppendLine($"  … và {notFound.Count - 10} mục khác");
+                    ShowInfo(msg.ToString());
+                }
+            }
+            catch (Exception ex)
+            {
+                ShowError("Lỗi nạp danh sách chọn", ex.Message);
+            }
+        }
+
+        #endregion
+
+        #region Xuất Excel
+
+        /// <summary>
+        /// selectedOnly = true → chỉ xuất các sheet đang chọn và các sheet nằm trong subset đang chọn.
+        /// </summary>
+        private void ExportExcel(bool selectedOnly)
+        {
+            if (document == null)
+            {
+                ShowInfo("Hãy mở một file sheet set trước.");
+                return;
+            }
+            if (!ResolvePending("xuất Excel")) return;
+
+            try
+            {
+                List<System.Xml.XmlNode> sheets = null;
+                if (selectedOnly)
+                {
+                    sheets = GetSelectedSheetNodes();
+                    if (sheets.Count == 0)
+                    {
+                        ShowInfo("Các mục đang chọn không có sheet nào.");
+                        return;
+                    }
+                }
+
+                string suggestedName = Path.GetFileNameWithoutExtension(sourcePath) +
+                                       (selectedOnly ? "_selected_" : "_") +
+                                       DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".xlsx";
+
+                string excelPath = AskSavePath("Xuất Excel", "Excel Files (*.xlsx)|*.xlsx",
+                    suggestedName, Path.GetDirectoryName(sourcePath));
+                if (excelPath == null) return;
+
+                // Xuất từ bản đang mở trong bộ nhớ → gồm cả các thay đổi đã Apply
+                int count = SheetSetExcelExporter.Export(document.Xml, excelPath, sheets);
+
+                string msg = $"Đã xuất {count} sheet sang Excel:\n{excelPath}";
+                if (dirty) msg += "\n\nLưu ý: dữ liệu gồm cả các thay đổi chưa Build DST.";
+                ShowInfo(msg);
+            }
+            catch (IOException ex) when (IsFileLocked(ex))
+            {
+                ShowError("Lỗi xuất Excel", "File Excel đang được mở. Hãy đóng file rồi thử lại.\n\n" + ex.Message);
+            }
+            catch (Exception ex)
+            {
+                ShowError("Lỗi xuất Excel", ex.Message);
+            }
+        }
+
+        #endregion
+
+        #region Excel (mở trực tiếp / import)
+
+        private static string ExcelTempDir
+        {
+            get { return Path.Combine(Path.GetTempPath(), "SheetSetDstConverter"); }
+        }
+
+        private static void CleanOldTempFiles()
+        {
+            try
+            {
+                if (!Directory.Exists(ExcelTempDir)) return;
+                foreach (var f in Directory.GetFiles(ExcelTempDir, "*.xlsx"))
+                {
+                    try
+                    {
+                        if (File.GetLastWriteTime(f) < DateTime.Now.AddDays(-7)) File.Delete(f);
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>Xuất ra file tạm rồi mở thẳng trong Excel (không cần chọn nơi lưu).</summary>
+        private void OpenInExcel(bool selectedOnly)
+        {
+            if (document == null)
+            {
+                ShowInfo("Hãy mở một file sheet set trước.");
+                return;
+            }
+            if (!ResolvePending("mở trong Excel")) return;
+
+            try
+            {
+                List<System.Xml.XmlNode> sheets = null;
+                if (selectedOnly)
+                {
+                    sheets = GetSelectedSheetNodes();
+                    if (sheets.Count == 0)
+                    {
+                        ShowInfo("Các mục đang chọn không có sheet nào.");
+                        return;
+                    }
+                }
+
+                Directory.CreateDirectory(ExcelTempDir);
+                CleanOldTempFiles();
+
+                string baseName = Path.GetFileNameWithoutExtension(sourcePath ?? "SheetSet");
+                foreach (char c in Path.GetInvalidFileNameChars()) baseName = baseName.Replace(c, '_');
+                string path = Path.Combine(ExcelTempDir, baseName + (selectedOnly ? "_selected_" : "_") +
+                                           DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".xlsx");
+
+                int count = SheetSetExcelExporter.Export(document.Xml, path, sheets);
+                lastExcelPath = path;
+
+                try
+                {
+                    Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+                }
+                catch (Exception ex)
+                {
+                    ShowError("Không mở được Excel", "Đã tạo file nhưng không mở được:\n" + path + "\n\n" + ex.Message);
+                }
+
+                { statusNote = $"Đã mở {count} sheet trong Excel — sửa xong nhấn Ctrl+S trong Excel rồi chọn Tệp → Excel → Import lại"; UpdateStatus(); }
+            }
+            catch (Exception ex)
+            {
+                ShowError("Lỗi mở trong Excel", ex.Message);
+            }
+        }
+
+        private void ImportFromLastExcel()
+        {
+            if (lastExcelPath == null || !File.Exists(lastExcelPath))
+            {
+                ShowInfo("Chưa có file Excel nào để import lại. Hãy dùng \"Mở trong Excel\" hoặc \"Import từ file Excel...\".");
+                return;
+            }
+            ImportFromExcel(lastExcelPath);
+        }
+
+        private void ImportFromExcelDialog()
+        {
+            if (document == null)
+            {
+                ShowInfo("Hãy mở một file sheet set trước.");
+                return;
+            }
+
+            string path = AskOpenPath(ExcelFilter, "Chọn file Excel để import", lastExcelPath ?? sourcePath);
+            if (path == null) return;
+
+            lastExcelPath = path;
+            ImportFromExcel(path);
+        }
+
+        private void ImportFromExcel(string path)
+        {
+            if (document == null)
+            {
+                ShowInfo("Hãy mở một file sheet set trước.");
+                return;
+            }
+            if (!ResolvePending("import Excel")) return;
+
+            ImportResult result;
+            Cursor = Cursors.WaitCursor;
+            try
+            {
+                result = SheetSetExcelImporter.Read(path, Root, ValidateValue);
+            }
+            catch (IOException ex) when (IsFileLocked(ex))
+            {
+                Cursor = Cursors.Default;
+                ShowError("Lỗi import Excel",
+                    "Không đọc được file. Hãy nhấn Ctrl+S trong Excel (hoặc đóng file) rồi thử lại.\n\n" + ex.Message);
+                return;
+            }
+            catch (Exception ex)
+            {
+                Cursor = Cursors.Default;
+                ShowError("Lỗi import Excel", ex.Message);
+                return;
+            }
+            finally
+            {
+                Cursor = Cursors.Default;
+            }
+
+            if (result.Changes.Count == 0 && result.Warnings.Count == 0)
+            {
+                string msg = "Không có giá trị nào khác so với sheet set hiện tại.";
+                if (string.Equals(path, lastExcelPath, StringComparison.OrdinalIgnoreCase))
+                    msg += "\n\nNếu bạn vừa sửa trong Excel, hãy nhấn Ctrl+S trong Excel rồi Import lại.";
+                ShowInfo(msg);
+                return;
+            }
+
+            int sheetCount = result.Changes.Select(c => c.Component).Distinct().Count();
+            string summary = Path.GetFileName(path) + Environment.NewLine +
+                             $"Đọc {result.RowsRead} dòng: khớp {result.RowsMatched}, không tìm thấy {result.RowsNotFound}. " +
+                             $"{result.Changes.Count} thay đổi trong {sheetCount} sheet.";
+
+            List<ImportChange> chosen;
+            using (var dlg = new ImportPreviewForm(summary, result.Changes, result.Warnings))
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                chosen = dlg.SelectedChanges;
+            }
+            if (chosen.Count == 0) return;
+
+            pending.Clear();
+            foreach (var ch in chosen)
+                pending[ch.Property] = new PendingEdit(ch.Component, ch.Property, ch.NewValue);
+            UpdatePendingUi();
+
+            if (!ApplyPending())
+            {
+                DiscardPending();
+                return;
+            }
+
+            { statusNote = $"Đã import {chosen.Count} giá trị từ {Path.GetFileName(path)}"; UpdateStatus(); }
+        }
+
+        #endregion
+
+        #region Công cụ chuyển đổi
+
+        /// <summary>Chuyển một file .dst bất kỳ sang .xml (độc lập với file đang mở).</summary>
+        private void ToolsDstToXml()
+        {
+            try
+            {
+                string dstPath = AskOpenPath(DstFilter, "Chọn file .dst cần chuyển sang XML", sourceDstPath);
+                if (dstPath == null) return;
+
+                byte[] xml = converter.DstToXml(File.ReadAllBytes(dstPath));
+
+                // Kết quả không phải XML hợp lệ → nhiều khả năng dictionary sai
+                string error;
+                if (!DstXmlConverter.IsWellFormedXml(xml, out error))
+                {
+                    var answer = MessageBox.Show(this,
+                        "Kết quả giải mã không phải XML hợp lệ (" + error + ").\n" +
+                        "Có thể dictionary chưa đúng.\n\nVẫn lưu file?",
+                        "Cảnh báo", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                    if (answer != DialogResult.Yes) return;
+                }
+
+                string xmlPath = AskSavePath("Chọn nơi lưu file XML", XmlFilter,
+                    Path.GetFileNameWithoutExtension(dstPath) + "_converted.xml",
+                    Path.GetDirectoryName(dstPath));
+                if (xmlPath == null) return;
+
+                File.WriteAllBytes(xmlPath, xml);
+
+                var open = MessageBox.Show(this,
+                    "DST → XML đã hoàn tất:\n" + xmlPath + "\n\nMở file XML này trong cửa sổ chính?",
+                    "Hoàn tất chuyển đổi", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                if (open == DialogResult.Yes) OpenFile(xmlPath);
+            }
+            catch (IOException ex) when (IsFileLocked(ex))
+            {
+                ShowError("Lỗi", "File đang bị chương trình khác sử dụng.\n\n" + ex.Message);
+            }
+            catch (Exception ex)
+            {
+                ShowError("Lỗi DST → XML", ex.Message);
+            }
+        }
+
+        /// <summary>Chuyển một file .xml bất kỳ (vd: tự sửa bằng editor) sang .dst.</summary>
+        private void ToolsXmlToDst()
+        {
+            try
+            {
+                string hint = sourceDstPath ?? sourcePath;
+                string xmlPath = AskOpenPath(XmlFilter, "Chọn file .xml cần chuyển sang DST", hint);
+                if (xmlPath == null) return;
+
+                // Kiểm tra UTF-16 / BOM / XML hợp lệ, rồi mã hoá TRƯỚC khi hỏi nơi lưu
+                bool bomRemoved;
+                byte[] xml = converter.PrepareXmlForEncoding(File.ReadAllBytes(xmlPath), out bomRemoved);
+                byte[] dst = converter.XmlToDst(xml);
+
+                string dstPath = AskSavePath("Chọn nơi lưu file DST", DstFilter,
+                    Path.GetFileNameWithoutExtension(xmlPath) + "_converted.dst",
+                    Path.GetDirectoryName(xmlPath));
+                if (dstPath == null) return;
+
+                // Kiểm tra an toàn: file bị khoá / AutoCAD đang chạy
+                if (File.Exists(dstPath))
+                {
+                    if (!DstFileGuard.ConfirmNotLocked(this, dstPath)) return;
+                    if (!DstFileGuard.ConfirmAutoCadClosed(this)) return;
+                }
+
+                // Backup nếu ghi đè file có sẵn
+                string backupPath = null;
+                if (File.Exists(dstPath))
+                {
+                    backupPath = dstPath + ".bak";
+                    File.Copy(dstPath, backupPath, true);
+                }
+
+                File.WriteAllBytes(dstPath, dst);
+
+                string msg = "XML → DST đã hoàn tất:\n" + dstPath;
+                if (backupPath != null) msg += "\n\nFile cũ đã được backup:\n" + backupPath;
+                if (bomRemoved) msg += "\n\nLưu ý: đã bỏ BOM UTF-8 ở đầu file XML.";
+                ShowInfo(msg);
+            }
+            catch (IOException ex) when (IsFileLocked(ex))
+            {
+                ShowError("Không ghi được file DST",
+                    "File đang bị khoá — có thể AutoCAD đang mở sheet set này.\n" +
+                    "Hãy đóng sheet set trong Sheet Set Manager rồi thử lại.\n\n" + ex.Message);
+            }
+            catch (Exception ex)
+            {
+                ShowError("Lỗi XML → DST", ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Học thêm byte từ một cặp file mẫu (.dst + bản XML nguyên gốc của nó),
+        /// gộp với bảng hiện tại, lưu ra JSON và dùng luôn.
+        /// </summary>
+        private void ToolsGenerateDictionary()
+        {
+            try
+            {
+                string dstPath = AskOpenPath(DstFilter, "Bước 1/2: chọn file .dst mẫu", sourceDstPath);
+                if (dstPath == null) return;
+
+                string xmlPath = AskOpenPath(XmlFilter,
+                    "Bước 2/2: chọn file .xml mẫu (bản giải mã NGUYÊN GỐC của file .dst vừa chọn)", dstPath);
+                if (xmlPath == null) return;
+
+                // Gộp: built-in + dictionary đang dùng + cặp file mẫu
+                var learner = DstXmlConverter.Create(dictionaryPath);
+                int added = learner.Learn(File.ReadAllBytes(xmlPath), File.ReadAllBytes(dstPath));
+
+                string outJson = AskSavePath("Lưu file dictionary", JsonFilter, "dictionary.json",
+                    Path.GetDirectoryName(dstPath));
+                if (outJson == null) return;
+
+                learner.SaveDictionary(outJson);
+                SetDictionary(outJson);
+
+                ShowInfo($"Đã lưu dictionary:\n{outJson}\n\n" +
+                         $"Học thêm {added} byte mới. Tổng cộng đã biết {converter.KnownByteCount}/256 byte.\n" +
+                         "Chương trình đang dùng dictionary này.");
+            }
+            catch (Exception ex)
+            {
+                ShowError("Lỗi tạo dictionary", ex.Message);
+            }
+        }
+
+        private void ToolsChooseDictionary()
+        {
+            string path = AskOpenPath(JsonFilter, "Chọn file dictionary (.json)", dictionaryPath);
+            if (path == null) return;
+
+            try
+            {
+                SetDictionary(path);
+                ShowInfo($"Đang dùng dictionary:\n{path}\n\n" +
+                         $"Đã biết {converter.KnownByteCount}/256 byte (gồm cả bảng built-in).");
+            }
+            catch (Exception ex)
+            {
+                ShowError("Lỗi đọc dictionary", ex.Message);
+            }
+        }
+
+        private void ToolsUseBuiltInDictionary()
+        {
+            try
+            {
+                SetDictionary(null);
+            }
+            catch (Exception ex)
+            {
+                ShowError("Lỗi", ex.Message);
+            }
+        }
+
+        /// <summary>Đổi dictionary (null = built-in). Lỗi → giữ nguyên dictionary cũ.</summary>
+        private void SetDictionary(string path)
+        {
+            var newConverter = DstXmlConverter.Create(path);
+            converter = newConverter;
+            dictionaryPath = string.IsNullOrWhiteSpace(path) ? null : path;
+            UpdateDictionaryLabel();
+        }
+
+        #endregion
+
+        #region Helpers
+
+        private string AskOpenPath(string filter, string title, string currentPath)
+        {
+            using (var ofd = new OpenFileDialog())
+            {
+                ofd.Filter = filter;
+                ofd.Title = title;
+                try
+                {
+                    string dir = string.IsNullOrWhiteSpace(currentPath)
+                        ? null
+                        : Path.GetDirectoryName(currentPath.Trim());
+                    if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
+                        ofd.InitialDirectory = dir;
+                }
+                catch (ArgumentException) { /* đường dẫn không hợp lệ → bỏ qua */ }
+
+                return ofd.ShowDialog(this) == DialogResult.OK ? ofd.FileName : null;
+            }
+        }
+
+        private string AskSavePath(string title, string filter, string fileName, string initialDir)
+        {
+            using (var sfd = new SaveFileDialog())
+            {
+                sfd.Title = title;
+                sfd.Filter = filter;
+                sfd.FileName = fileName;
+                if (!string.IsNullOrEmpty(initialDir) && Directory.Exists(initialDir))
+                    sfd.InitialDirectory = initialDir;
+
+                return sfd.ShowDialog(this) == DialogResult.OK ? sfd.FileName : null;
+            }
+        }
+
+        /// <summary>ERROR_SHARING_VIOLATION (32) hoặc ERROR_LOCK_VIOLATION (33).</summary>
+        private static bool IsFileLocked(IOException ex)
+        {
+            int code = ex.HResult & 0xFFFF;
+            return code == 32 || code == 33;
+        }
+
+        private void ShowInfo(string message)
+        {
+            MessageBox.Show(this, message, "Thông báo", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
+        private void ShowError(string title, string message)
+        {
+            MessageBox.Show(this, message, title, MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
 
         #endregion
@@ -1495,197 +2539,4 @@ namespace SheetSet_File_DST_Converter
             public string Value { get; }
         }
     }
-
-    #region Subset clipboard & input dialog
-
-    /// <summary>
-    /// Clipboard dùng chung cho mọi cửa sổ viewer → copy subset từ sheet set này paste sang sheet set khác được.
-    /// Lưu bản sao tách rời tại thời điểm copy (sửa bản gốc sau đó không ảnh hưởng).
-    /// </summary>
-    internal sealed class SubsetClipboard
-    {
-        private SubsetClipboard(System.Xml.XmlElement node, string name, bool withSheets)
-        {
-            Node = node;
-            Name = name;
-            WithSheets = withSheets;
-
-            int subsets, sheets;
-            SheetSetDocument.CountClip(node, out subsets, out sheets);
-            SubsetCount = subsets;
-            SheetCount = sheets;
-        }
-
-        public static SubsetClipboard Current { get; private set; }
-
-        public static void Set(System.Xml.XmlElement node, string name, bool withSheets)
-        {
-            Current = new SubsetClipboard(node, name, withSheets);
-        }
-
-        public System.Xml.XmlElement Node { get; }
-        public string Name { get; }
-        public bool WithSheets { get; }
-        public int SubsetCount { get; }
-        public int SheetCount { get; }
-
-        public string Summary
-        {
-            get
-            {
-                return WithSheets
-                    ? $"{SubsetCount} subset, {SheetCount} sheet"
-                    : $"{SubsetCount} subset, không kèm sheet";
-            }
-        }
-    }
-
-    /// <summary>Hộp thoại nhập một dòng chữ.</summary>
-    internal static class InputDialog
-    {
-        /// <summary>Trả null nếu bấm Cancel.</summary>
-        public static string Show(IWin32Window owner, string title, string prompt, string defaultValue)
-        {
-            using (var form = new Form())
-            using (var label = new Label())
-            using (var textBox = new TextBox())
-            using (var ok = new Button())
-            using (var cancel = new Button())
-            {
-                form.Text = title;
-                form.FormBorderStyle = FormBorderStyle.FixedDialog;
-                form.StartPosition = FormStartPosition.CenterParent;
-                form.MinimizeBox = false;
-                form.MaximizeBox = false;
-                form.ShowInTaskbar = false;
-                form.ClientSize = new Size(440, 150);
-
-                label.Text = prompt;
-                label.SetBounds(12, 10, 416, 72);
-
-                textBox.Text = defaultValue ?? "";
-                textBox.SetBounds(12, 84, 416, 23);
-                textBox.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top;
-
-                ok.Text = "OK";
-                ok.DialogResult = DialogResult.OK;
-                ok.SetBounds(256, 116, 82, 26);
-
-                cancel.Text = "Cancel";
-                cancel.DialogResult = DialogResult.Cancel;
-                cancel.SetBounds(346, 116, 82, 26);
-
-                form.Controls.AddRange(new Control[] { label, textBox, ok, cancel });
-                form.AcceptButton = ok;
-                form.CancelButton = cancel;
-                form.Shown += (s, e) => { textBox.Focus(); textBox.SelectAll(); };
-
-                return form.ShowDialog(owner) == DialogResult.OK ? textBox.Text : null;
-            }
-        }
-    }
-
-    #endregion
-
-    #region PropertyGrid adapter
-
-    /// <summary>Cầu nối giữa PropertyGrid và các giá trị chờ Apply trong viewer.</summary>
-    internal interface IPropertyEditSession
-    {
-        string GetValue(SsmProperty prop);
-        bool HasPending(SsmProperty prop);
-        bool SetPending(SsmComponent comp, SsmProperty prop, string value);
-    }
-
-    /// <summary>
-    /// Cho PropertyGrid hiển thị danh sách thuộc tính động, nhóm theo Category.
-    /// Tên descriptor ổn định (nhóm + propname) để khi chọn nhiều sheet, PropertyGrid
-    /// gộp được các thuộc tính chung; ô có giá trị khác nhau sẽ để trống.
-    /// </summary>
-    internal sealed class PropertyBag : ICustomTypeDescriptor
-    {
-        private readonly PropertyDescriptorCollection properties;
-        private readonly string className;
-
-        public PropertyBag(SsmComponent comp, IPropertyEditSession session)
-        {
-            className = comp.Kind.ToString();
-
-            var used = new Dictionary<string, int>(StringComparer.Ordinal);
-            var list = new List<PropertyDescriptor>();
-
-            foreach (var p in comp.Properties)
-            {
-                string key = (p.IsCustom ? "c|" : "s|") + p.Category + "|" + (p.PropName ?? p.Name);
-                int n;
-                used.TryGetValue(key, out n);
-                used[key] = n + 1;
-                if (n > 0) key += "#" + n;
-
-                list.Add(new BagPropertyDescriptor(key, comp, p, session));
-            }
-
-            properties = new PropertyDescriptorCollection(list.ToArray(), true);
-        }
-
-        public AttributeCollection GetAttributes() { return AttributeCollection.Empty; }
-        public string GetClassName() { return className; }
-        public string GetComponentName() { return null; }
-        public TypeConverter GetConverter() { return null; }
-        public EventDescriptor GetDefaultEvent() { return null; }
-        public PropertyDescriptor GetDefaultProperty() { return null; }
-        public object GetEditor(Type editorBaseType) { return null; }
-        public EventDescriptorCollection GetEvents() { return EventDescriptorCollection.Empty; }
-        public EventDescriptorCollection GetEvents(Attribute[] attributes) { return EventDescriptorCollection.Empty; }
-        public PropertyDescriptorCollection GetProperties() { return properties; }
-        public PropertyDescriptorCollection GetProperties(Attribute[] attributes) { return properties; }
-        public object GetPropertyOwner(PropertyDescriptor pd) { return this; }
-    }
-
-    internal sealed class BagPropertyDescriptor : PropertyDescriptor
-    {
-        private readonly SsmComponent comp;
-        private readonly SsmProperty prop;
-        private readonly IPropertyEditSession session;
-
-        public BagPropertyDescriptor(string key, SsmComponent comp, SsmProperty prop, IPropertyEditSession session)
-            : base(key, new Attribute[]
-            {
-                // PropertyGrid xếp nhóm theo alphabet; thêm '\t' ở đầu để nhóm quan trọng lên trước
-                // (ký tự tab không hiện ra trên giao diện).
-                new CategoryAttribute(new string('\t', prop.CategoryPriority) + prop.Category),
-                new DescriptionAttribute(prop.Editable
-                    ? prop.Description + "  (có thể sửa — chữ đậm = đang chờ Apply)"
-                    : prop.Description),
-                new ReadOnlyAttribute(!prop.Editable)
-            })
-        {
-            this.comp = comp;
-            this.prop = prop;
-            this.session = session;
-        }
-
-        public override string DisplayName { get { return prop.Name; } }
-        public override Type ComponentType { get { return typeof(PropertyBag); } }
-        public override bool IsReadOnly { get { return !prop.Editable || session == null; } }
-        public override Type PropertyType { get { return typeof(string); } }
-        public override bool CanResetValue(object component) { return false; }
-        public override object GetValue(object component) { return session != null ? session.GetValue(prop) : prop.Value; }
-        public override void ResetValue(object component) { }
-
-        public override void SetValue(object component, object value)
-        {
-            if (IsReadOnly) return;
-            if (session.SetPending(comp, prop, value as string ?? ""))
-                OnValueChanged(component, EventArgs.Empty);
-        }
-
-        /// <summary>PropertyGrid hiện chữ đậm cho giá trị "đã đổi" → dùng để đánh dấu giá trị chờ Apply.</summary>
-        public override bool ShouldSerializeValue(object component)
-        {
-            return session != null && session.HasPending(prop);
-        }
-    }
-
-    #endregion
 }

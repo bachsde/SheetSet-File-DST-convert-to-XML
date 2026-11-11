@@ -36,14 +36,23 @@ namespace SheetSet_File_DST_Converter.Helper
         private static readonly HashSet<string> FixedHeaderSet =
             new HashSet<string>(FixedHeaders, StringComparer.Ordinal);
 
-        /// <summary>Xuất ra file Excel, trả về số sheet đã xuất.</summary>
-        public static int Export(XmlDocument doc, string excelPath)
+        /// <summary>
+        /// Xuất ra file Excel, trả về số sheet đã xuất.
+        /// onlySheets = null → xuất tất cả; ngược lại chỉ xuất các sheet (phần tử AcSmSheet) trong danh sách,
+        /// theo thứ tự xuất hiện trong sheet set.
+        /// </summary>
+        public static int Export(XmlDocument doc, string excelPath, IEnumerable<XmlNode> onlySheets = null)
         {
             if (doc == null) throw new ArgumentNullException(nameof(doc));
 
+            var filter = onlySheets == null ? null : new HashSet<XmlNode>(onlySheets);
+
             var rows = new List<Dictionary<string, string>>();
             foreach (XmlNode sheet in doc.SelectNodes("//AcSmSheet"))
+            {
+                if (filter != null && !filter.Contains(sheet)) continue;
                 rows.Add(ReadSheet(sheet));
+            }
 
             var dynamicHeaders = rows
                 .SelectMany(r => r.Keys)

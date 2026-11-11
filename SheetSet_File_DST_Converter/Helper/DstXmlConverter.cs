@@ -381,8 +381,8 @@ namespace SheetSet_File_DST_Converter.Helper
             if (items.Count > MaxReportedItems)
                 sb.AppendLine($"  … và {items.Count - MaxReportedItems} mục khác.");
             sb.AppendLine();
-            sb.Append("Cách khắc phục: dùng \"Generate Dictionary\" với một cặp file XML/DST mẫu có chứa các ký tự này, " +
-                      "rồi chọn file dictionary vừa tạo.");
+            sb.Append("Cách khắc phục: vào menu Công cụ → \"Tạo dictionary...\" với một cặp file DST + XML mẫu " +
+                      "có chứa các ký tự này (chương trình sẽ dùng luôn dictionary vừa tạo).");
             return sb.ToString();
         }
 
